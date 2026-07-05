@@ -1,0 +1,18 @@
+; Engine configuration file.
+; Forest Escape — Godot 4.x
+
+config_version=5
+
+[application]
+
+config/name="Forest Escape"
+run/main_scene="res://Main.tscn"
+config/features=PackedStringArray("4.4", "Mobile")
+
+[display]
+
+window/handheld/orientation="sensor_landscape"
+
+[rendering]
+
+renderer/rendering_method="mobile"
