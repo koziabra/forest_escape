@@ -8,6 +8,9 @@ const WORLD := 240.0
 const EYE := 1.6
 const PLAYER_SPEED := 5.0       # обычная ходьба
 const SPRINT_SPEED := 9.0       # спринт (Shift)
+const JUMP_VELOCITY := 5.4      # прыжок (Space)
+const GRAVITY := 15.0
+const MAX_HEALTH := 3
 const PLAYER_R := 0.4
 const TREE_COUNT := 4000
 const SHARD_COUNT := 5
@@ -40,6 +43,14 @@ var sprinting := false
 var stamina := 1.0
 var stamina_exhausted := false
 var cam_eye := EYE
+var jump_h := 0.0
+var jump_vy := 0.0
+var was_airborne := false
+var health := MAX_HEALTH
+var invuln := 0.0
+var hidden := false
+var bush_grid: Dictionary = {}
+var heartbeat_t := 0.0
 
 var move_index := -1
 var move_origin := Vector2.ZERO
@@ -101,6 +112,8 @@ var hud_msg: Label
 var status_timer := 0.0
 var battery_fill: ColorRect
 var stamina_fill: ColorRect
+var health_slots: Array = []
+var damage_rect: ColorRect
 var light_btn: Button
 var menu_panel: Control
 var end_panel: Control
@@ -708,20 +721,22 @@ func _build_mushrooms() -> void:
 func _build_bushes() -> void:
 	var trans: Array = []
 	var cols: Array = []
-	for i in 4000:
+	var mesh_r := 1.0
+	for i in 3600:
 		var a := randf() * TAU
 		var r := randf_range(8.0, WORLD - 4.0)
 		var x := cos(a) * r
 		var z := sin(a) * r
-		var s := randf_range(0.7, 1.5)
-		var b := Basis(Vector3.UP, randf() * TAU).scaled(Vector3(s, s, s))
-		trans.append(Transform3D(b, Vector3(x, _terrain_h(x, z) + 0.35 * s, z)))
+		var s := randf_range(1.0, 2.2)                 # крупнее — можно спрятаться
+		var b := Basis(Vector3.UP, randf() * TAU).scaled(Vector3(s, s * 0.85, s))
+		trans.append(Transform3D(b, Vector3(x, _terrain_h(x, z) + 0.4 * s, z)))
 		cols.append(Color.from_hsv(0.28 + randf_range(-0.03, 0.05), 0.44, randf_range(0.18, 0.3)))
+		_bush_add(x, z, mesh_r * s * 0.75)             # радиус укрытия
 	var mesh := SphereMesh.new()
-	mesh.radius = 0.55
-	mesh.height = 0.9
-	mesh.radial_segments = 6
-	mesh.rings = 4
+	mesh.radius = mesh_r
+	mesh.height = mesh_r * 1.7
+	mesh.radial_segments = 7
+	mesh.rings = 5
 	var mat := _img_mat(foliage_img_tex, 2.0)
 	mat.vertex_color_use_as_albedo = true
 	_add_mm(mesh, mat, trans, cols)
@@ -1079,6 +1094,30 @@ func _grid_add(x: float, z: float, r: float) -> void:
 	tree_grid[key].append(Vector3(x, z, r))
 
 
+func _bush_add(x: float, z: float, r: float) -> void:
+	var key := Vector2i(int((x - grid_origin) / GRID_CELL), int((z - grid_origin) / GRID_CELL))
+	if not bush_grid.has(key):
+		bush_grid[key] = []
+	bush_grid[key].append(Vector3(x, z, r))
+
+
+# игрок «спрятался», если стоит внутри куста
+func _is_hidden() -> bool:
+	var px := player.position.x
+	var pz := player.position.z
+	var cx := int((px - grid_origin) / GRID_CELL)
+	var cz := int((pz - grid_origin) / GRID_CELL)
+	for dz in [-1, 0, 1]:
+		for dx in [-1, 0, 1]:
+			var key := Vector2i(cx + dx, cz + dz)
+			if bush_grid.has(key):
+				for b in bush_grid[key]:
+					var bv: Vector3 = b
+					if Vector2(px - bv.x, pz - bv.y).length() < bv.z:
+						return true
+	return false
+
+
 func _nearby_trees(x: float, z: float) -> Array:
 	var out: Array = []
 	var cx := int((x - grid_origin) / GRID_CELL)
@@ -1202,6 +1241,33 @@ func _build_hud() -> void:
 	hud_count.add_theme_font_size_override("font_size", 28)
 	layer.add_child(hud_count)
 
+	# красный экран урона
+	damage_rect = ColorRect.new()
+	damage_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
+	damage_rect.color = Color(0.7, 0.05, 0.03, 0.0)
+	damage_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(damage_rect)
+
+	# здоровье (квадраты-сердца)
+	var hp := HBoxContainer.new()
+	hp.position = Vector2(20, 52)
+	hp.add_theme_constant_override("separation", 6)
+	hp.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	layer.add_child(hp)
+	health_slots.clear()
+	for i in MAX_HEALTH:
+		var h := Panel.new()
+		h.custom_minimum_size = Vector2(24, 24)
+		h.mouse_filter = Control.MOUSE_FILTER_IGNORE
+		var hsb := StyleBoxFlat.new()
+		hsb.bg_color = Color(0.9, 0.2, 0.18, 0.95)
+		hsb.set_corner_radius_all(6)
+		hsb.set_border_width_all(2)
+		hsb.border_color = Color(1, 0.5, 0.45)
+		h.add_theme_stylebox_override("panel", hsb)
+		hp.add_child(h)
+		health_slots.append(hsb)
+
 	# ряд ячеек-осколков (по центру вверху), как в HTML
 	var inv := HBoxContainer.new()
 	inv.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -1244,11 +1310,11 @@ func _build_hud() -> void:
 	layer.add_child(hud_msg)
 
 	var hint := Label.new()
-	hint.position = Vector2(20, 54)
+	hint.position = Vector2(20, 84)
 	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hint.add_theme_font_size_override("font_size", 15)
 	hint.add_theme_color_override("font_color", Color(0.7, 0.75, 0.85))
-	hint.text = "WASD — идти  ·  Shift — бежать  ·  Ctrl — присесть  ·  мышь — осмотр  ·  F — фонарь  ·  Q — ветка"
+	hint.text = "WASD — идти · Shift — бежать · Ctrl — присесть · Space — прыжок · F — фонарь · Q — ветка · в кустах прячешься"
 	layer.add_child(hint)
 
 	# полоска заряда фонаря
@@ -1383,11 +1449,75 @@ func _build_menu() -> void:
 	end_panel.hide()
 	layer.add_child(end_panel)
 
-	menu_panel = _make_overlay(
-		"FOREST ESCAPE",
-		"Ночь в лесу. Собери 5 светящихся осколков звезды — она сложится у тебя в руках. Отнеси её к древним воротам и вставь в гнездо пьедестала. Но берегись: стая оборотней бросится за тобой. Фонарь освещает путь, но выдаёт тебя — в темноте они почти слепы.",
-		"Войти в лес", _on_play)
+	menu_panel = _build_start_menu()
 	layer.add_child(menu_panel)
+
+
+func _build_start_menu() -> Control:
+	var accent := Color(1.0, 0.82, 0.4)
+	var c := Control.new()
+	c.set_anchors_preset(Control.PRESET_FULL_RECT)
+	var bg := ColorRect.new()
+	bg.color = Color(0.02, 0.03, 0.06, 0.78)
+	bg.set_anchors_preset(Control.PRESET_FULL_RECT)
+	bg.mouse_filter = Control.MOUSE_FILTER_STOP
+	c.add_child(bg)
+
+	var center := CenterContainer.new()
+	center.set_anchors_preset(Control.PRESET_FULL_RECT)
+	c.add_child(center)
+
+	var vb := VBoxContainer.new()
+	vb.alignment = BoxContainer.ALIGNMENT_CENTER
+	vb.add_theme_constant_override("separation", 12)
+	center.add_child(vb)
+
+	var img := Image.new()
+	if img.load("res://icon.png") == OK:
+		var logo := TextureRect.new()
+		logo.texture = ImageTexture.create_from_image(img)
+		logo.custom_minimum_size = Vector2(150, 150)
+		logo.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		logo.stretch_mode = TextureRect.STRETCH_KEEP_ASPECT_CENTERED
+		logo.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+		vb.add_child(logo)
+
+	var t := Label.new()
+	t.text = "FOREST ESCAPE"
+	t.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	t.add_theme_font_size_override("font_size", 56)
+	t.add_theme_color_override("font_color", accent)
+	t.add_theme_color_override("font_outline_color", Color(0.14, 0.07, 0.0))
+	t.add_theme_constant_override("outline_size", 8)
+	vb.add_child(t)
+
+	var tag := Label.new()
+	tag.text = "Соберись во тьме. Собери звезду. Уцелей."
+	tag.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	tag.add_theme_font_size_override("font_size", 18)
+	tag.add_theme_color_override("font_color", Color(0.8, 0.85, 0.95))
+	vb.add_child(tag)
+
+	var sp := Control.new()
+	sp.custom_minimum_size = Vector2(0, 8)
+	vb.add_child(sp)
+
+	var b := Button.new()
+	b.text = "Войти в лес"
+	b.custom_minimum_size = Vector2(280, 78)
+	b.size_flags_horizontal = Control.SIZE_SHRINK_CENTER
+	b.add_theme_font_size_override("font_size", 30)
+	_style_button(b, accent)
+	b.pressed.connect(_on_play)
+	vb.add_child(b)
+
+	var leg := Label.new()
+	leg.text = "WASD — идти · Shift — бежать · Ctrl — присесть · Space — прыжок\nF — фонарь · Q — бросить ветку · прячься в кустах от оборотней"
+	leg.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
+	leg.add_theme_font_size_override("font_size", 14)
+	leg.add_theme_color_override("font_color", Color(0.65, 0.72, 0.85))
+	vb.add_child(leg)
+	return c
 
 
 func _on_play() -> void:
@@ -1409,6 +1539,41 @@ func _toggle_light() -> void:
 	light_on = not light_on
 	flashlight.visible = light_on
 	light_btn.text = "Фонарь: вкл" if light_on else "Фонарь: выкл"
+
+
+func _try_jump() -> void:
+	if not running:
+		return
+	if jump_h <= 0.001 and jump_vy == 0.0:
+		jump_vy = JUMP_VELOCITY
+		was_airborne = true
+		_beep(320.0, 0.1, 0.08, 520.0)
+
+
+func _hit_player(w: Dictionary) -> void:
+	if invuln > 0.0:
+		return
+	health -= 1
+	invuln = 1.6
+	_update_health()
+	if damage_rect != null:
+		damage_rect.color = Color(0.7, 0.05, 0.03, 0.55)
+	_beep(200.0, 0.3, 0.22, 80.0)
+	# отбросить оборотня, чтобы не добил мгновенно
+	var away := Vector3(w["pos"].x - player.position.x, 0, w["pos"].z - player.position.z)
+	if away.length() < 0.01:
+		away = Vector3(1, 0, 0)
+	away = away.normalized() * 4.5
+	var np: Vector3 = w["pos"] + away
+	np.y = _terrain_h(np.x, np.z)
+	w["pos"] = np
+	w["node"].position = np
+	w["state"] = "search"
+	w["search"] = SEARCH_TIME
+	if health <= 0:
+		_lose()
+	else:
+		_flash("Оборотень ранил тебя! HP: %d" % health, Color(1.0, 0.4, 0.35))
 
 
 func _update_hud() -> void:
@@ -1440,6 +1605,17 @@ func _update_hud() -> void:
 		star_sb.bg_color = Color(0, 0, 0, 0.35)
 		star_sb.border_color = Color(1, 1, 1, 0.18)
 		star_lbl.add_theme_color_override("font_color", Color(0.3, 0.35, 0.45))
+
+
+func _update_health() -> void:
+	for i in health_slots.size():
+		var sb: StyleBoxFlat = health_slots[i]
+		if i < health:
+			sb.bg_color = Color(0.9, 0.2, 0.18, 0.95)
+			sb.border_color = Color(1, 0.5, 0.45)
+		else:
+			sb.bg_color = Color(0.15, 0.12, 0.13, 0.6)
+			sb.border_color = Color(0.4, 0.3, 0.3)
 
 
 func _flash(msg: String, col: Color = Color(0.95, 0.97, 1.0)) -> void:
@@ -1484,6 +1660,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			_throw_branch()
 		elif event.keycode == KEY_E:
 			_try_insert_shard()
+		elif event.keycode == KEY_SPACE:
+			_try_jump()
 
 
 # ---------- главный цикл ----------
@@ -1499,6 +1677,10 @@ func _process(delta: float) -> void:
 	if not running:
 		return
 	game_time += delta
+	if invuln > 0.0:
+		invuln -= delta
+	if damage_rect != null and damage_rect.color.a > 0.0:
+		damage_rect.color.a = max(0.0, damage_rect.color.a - delta * 1.2)
 
 	player.rotation.y = yaw
 	cam.rotation.x = pitch
@@ -1542,7 +1724,17 @@ func _process(delta: float) -> void:
 	if pr > WORLD:
 		nx = nx / pr * WORLD
 		nz = nz / pr * WORLD
-	player.position = Vector3(nx, _terrain_h(nx, nz), nz)
+	# прыжок / гравитация
+	if jump_h > 0.0 or jump_vy != 0.0:
+		jump_vy -= GRAVITY * delta
+		jump_h += jump_vy * delta
+		if jump_h <= 0.0:
+			jump_h = 0.0
+			jump_vy = 0.0
+			if was_airborne:
+				was_airborne = false
+				_beep(120.0, 0.09, 0.06, 80.0)
+	player.position = Vector3(nx, _terrain_h(nx, nz) + jump_h, nz)
 
 	# покачивание головы + крен камеры при ходьбе
 	var move_mag: float = min(1.0, mv.length())
@@ -1591,9 +1783,21 @@ func _process(delta: float) -> void:
 	# контекстные подсказки
 	if not ended and phase != "escape":
 		if any_chasing:
-			_flash("Оборотень гонится — беги или выключи фонарь!", Color(1.0, 0.42, 0.37))
+			_flash("Оборотень гонится — беги, прячься или выключи фонарь!", Color(1.0, 0.42, 0.37))
+		elif hidden:
+			_flash("Ты спрятался в кустах — тебя не видно", Color(0.42, 1.0, 0.62))
 		elif status_timer <= 0.0 and not light_on:
 			_flash("В темноте оборотни почти слепы — крадись", Color(0.42, 1.0, 0.62))
+
+	# сердцебиение при погоне
+	if any_chasing:
+		heartbeat_t -= delta
+		if heartbeat_t <= 0.0:
+			heartbeat_t = 0.6
+			_beep(56.0, 0.12, 0.16, 42.0)
+			get_tree().create_timer(0.17).timeout.connect(func() -> void: _beep(50.0, 0.1, 0.11, 40.0))
+	else:
+		heartbeat_t = 0.0
 
 
 func _animate_shards(delta: float) -> void:
@@ -1763,6 +1967,7 @@ func _update_wolves(delta: float) -> void:
 	var pp := player.position
 	var t := game_time
 	any_chasing = false
+	hidden = _is_hidden()
 	for w in wolves:
 		var wpos: Vector3 = w["pos"]
 		var dxp := pp.x - wpos.x
@@ -1791,7 +1996,9 @@ func _update_wolves(delta: float) -> void:
 			var hearing := 2.0
 			if moving:
 				hearing = 2.5 if crouching else (16.0 if sprinting else 10.0)
-			var sees := dist < sight or dist < hearing
+			# в кустах не видят — но уже гонящийся оборотень всё равно находит
+			var can_detect: bool = (not hidden) or w["state"] == "chase"
+			var sees := can_detect and (dist < sight or dist < hearing)
 			if sees:
 				if w["state"] != "chase":
 					_alert_pack(pp)
@@ -1878,8 +2085,7 @@ func _update_wolves(delta: float) -> void:
 			head.rotation.x += (0.15 - head.rotation.x) * 0.1
 
 		if dist < WOLF_CATCH:
-			_lose()
-			return
+			_hit_player(w)
 
 
 func _animate_wolf_run(w: Dictionary, delta: float, speed: float) -> void:
