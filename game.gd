@@ -722,7 +722,7 @@ func _build_bushes() -> void:
 	var trans: Array = []
 	var cols: Array = []
 	var mesh_r := 1.0
-	for i in 3600:
+	for i in 2000:
 		var a := randf() * TAU
 		var r := randf_range(8.0, WORLD - 4.0)
 		var x := cos(a) * r
@@ -1241,33 +1241,6 @@ func _build_hud() -> void:
 	hud_count.add_theme_font_size_override("font_size", 28)
 	layer.add_child(hud_count)
 
-	# красный экран урона
-	damage_rect = ColorRect.new()
-	damage_rect.set_anchors_preset(Control.PRESET_FULL_RECT)
-	damage_rect.color = Color(0.7, 0.05, 0.03, 0.0)
-	damage_rect.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(damage_rect)
-
-	# здоровье (квадраты-сердца)
-	var hp := HBoxContainer.new()
-	hp.position = Vector2(20, 52)
-	hp.add_theme_constant_override("separation", 6)
-	hp.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(hp)
-	health_slots.clear()
-	for i in MAX_HEALTH:
-		var h := Panel.new()
-		h.custom_minimum_size = Vector2(24, 24)
-		h.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		var hsb := StyleBoxFlat.new()
-		hsb.bg_color = Color(0.9, 0.2, 0.18, 0.95)
-		hsb.set_corner_radius_all(6)
-		hsb.set_border_width_all(2)
-		hsb.border_color = Color(1, 0.5, 0.45)
-		h.add_theme_stylebox_override("panel", hsb)
-		hp.add_child(h)
-		health_slots.append(hsb)
-
 	# ряд ячеек-осколков (по центру вверху), как в HTML
 	var inv := HBoxContainer.new()
 	inv.alignment = BoxContainer.ALIGNMENT_CENTER
@@ -1310,7 +1283,7 @@ func _build_hud() -> void:
 	layer.add_child(hud_msg)
 
 	var hint := Label.new()
-	hint.position = Vector2(20, 84)
+	hint.position = Vector2(20, 54)
 	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hint.add_theme_font_size_override("font_size", 15)
 	hint.add_theme_color_override("font_color", Color(0.7, 0.75, 0.85))
@@ -2085,7 +2058,8 @@ func _update_wolves(delta: float) -> void:
 			head.rotation.x += (0.15 - head.rotation.x) * 0.1
 
 		if dist < WOLF_CATCH:
-			_hit_player(w)
+			_lose()
+			return
 
 
 func _animate_wolf_run(w: Dictionary, delta: float, speed: float) -> void:
