@@ -6,7 +6,8 @@ extends Node3D
 
 const WORLD := 240.0
 const EYE := 1.6
-const PLAYER_SPEED := 6.6
+const PLAYER_SPEED := 5.0       # обычная ходьба
+const SPRINT_SPEED := 9.0       # спринт (Shift)
 const PLAYER_R := 0.4
 const TREE_COUNT := 4000
 const SHARD_COUNT := 5
@@ -20,6 +21,8 @@ const ALERT_RADIUS := 28.0
 const SEARCH_TIME := 9.0
 const SENS := 0.005
 const BATTERY_DRAIN := 1.0 / 200.0
+const STAMINA_DRAIN := 1.0 / 13.0    # спринт на ~13 сек
+const STAMINA_REGEN := 1.0 / 7.0     # полное восстановление ~7 сек
 const TREE_R := 0.55
 const BRANCH_COUNT := 26
 const DISTRACT_RADIUS := 24.0
@@ -33,6 +36,9 @@ var bob_phase := 0.0
 var game_time := 0.0
 var player_vel := Vector3.ZERO
 var crouching := false
+var sprinting := false
+var stamina := 1.0
+var stamina_exhausted := false
 var cam_eye := EYE
 
 var move_index := -1
@@ -55,6 +61,7 @@ var exit_pos := Vector3.ZERO
 
 var glow_tex: GradientTexture2D
 var tetra_mesh: ArrayMesh
+var shard_frag_mesh: ArrayMesh
 var star_mesh: ArrayMesh
 var grass_img_tex: ImageTexture
 var foliage_img_tex: ImageTexture
@@ -91,6 +98,7 @@ var inv_slots: Array = []
 var hud_msg: Label
 var status_timer := 0.0
 var battery_fill: ColorRect
+var stamina_fill: ColorRect
 var light_btn: Button
 var menu_panel: Control
 var end_panel: Control
@@ -104,6 +112,7 @@ func _ready() -> void:
 	foliage_img_tex = _foliage_img()
 	bark_img_tex = _bark_img()
 	tetra_mesh = _make_tetra_mesh(0.36)
+	shard_frag_mesh = _make_shard_fragment()
 	star_mesh = _make_star_mesh(5, 0.5, 0.21, 0.16)
 	_build_environment()
 	_build_terrain()
@@ -188,10 +197,10 @@ func _grass_img() -> ImageTexture:
 func _foliage_img() -> ImageTexture:
 	var s := 128
 	var img := Image.create(s, s, false, Image.FORMAT_RGBA8)
-	img.fill(Color(0.22, 0.32, 0.18))
+	img.fill(Color(0.32, 0.45, 0.26))
 	for i in 340:
-		var g := randf_range(0.34, 0.56)
-		var col := Color(randf_range(0.16, 0.28), g, randf_range(0.18, 0.30))
+		var g := randf_range(0.44, 0.68)
+		var col := Color(randf_range(0.24, 0.38), g, randf_range(0.26, 0.40))
 		_blot(img, randi() % s, randi() % s, 2 + randi() % 3, 2 + randi() % 3, col)
 	return ImageTexture.create_from_image(img)
 
@@ -270,7 +279,7 @@ func _build_environment() -> void:
 	env.background_mode = Environment.BG_SKY
 	env.sky = sky
 	env.ambient_light_source = Environment.AMBIENT_SOURCE_SKY
-	env.ambient_light_energy = 0.24
+	env.ambient_light_energy = 0.3
 
 	# кинематографичный тонмаппинг — глубже тени, теплее свет
 	env.tonemap_mode = Environment.TONE_MAPPER_ACES
@@ -303,8 +312,8 @@ func _build_environment() -> void:
 	add_child(we)
 
 	var moon := DirectionalLight3D.new()
-	moon.light_energy = 0.55
-	moon.light_color = Color(0.6, 0.68, 0.88)
+	moon.light_energy = 0.68
+	moon.light_color = Color(0.62, 0.7, 0.9)
 	moon.rotation_degrees = Vector3(-42, -120, 0)
 	moon.shadow_enabled = true
 	moon.directional_shadow_max_distance = 90.0
@@ -491,7 +500,7 @@ func _build_trees() -> void:
 		var tr := Transform3D(b, Vector3(x, _terrain_h(x, z), z))
 		trunk_t.append(tr)
 		_grid_add(x, z, TREE_R * s)
-		var col := Color.from_hsv(0.28 + randf_range(-0.03, 0.05), 0.45, randf_range(0.34, 0.5))
+		var col := Color.from_hsv(0.28 + randf_range(-0.03, 0.05), 0.48, randf_range(0.2, 0.32))
 		var r := randf()
 		if r < 0.46:
 			con_t.append(tr)
@@ -701,7 +710,7 @@ func _build_bushes() -> void:
 		var s := randf_range(0.7, 1.5)
 		var b := Basis(Vector3.UP, randf() * TAU).scaled(Vector3(s, s, s))
 		trans.append(Transform3D(b, Vector3(x, _terrain_h(x, z) + 0.35 * s, z)))
-		cols.append(Color.from_hsv(0.28 + randf_range(-0.03, 0.05), 0.42, randf_range(0.28, 0.44)))
+		cols.append(Color.from_hsv(0.28 + randf_range(-0.03, 0.05), 0.44, randf_range(0.18, 0.3)))
 	var mesh := SphereMesh.new()
 	mesh.radius = 0.55
 	mesh.height = 0.9
@@ -759,6 +768,28 @@ func _make_tetra_mesh(size: float) -> ArrayMesh:
 		st.add_vertex(v[f[0]])
 		st.add_vertex(v[f[1]])
 		st.add_vertex(v[f[2]])
+	st.generate_normals()
+	return st.commit()
+
+
+# один отломанный луч звезды — треугольный осколок с толщиной
+func _make_shard_fragment() -> ArrayMesh:
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	var h := 0.06
+	var a_f := Vector3(0.0, 0.55, h)
+	var b_f := Vector3(-0.17, -0.13, h)
+	var c_f := Vector3(0.17, -0.13, h)
+	var a_b := Vector3(0.0, 0.55, -h)
+	var b_b := Vector3(-0.17, -0.13, -h)
+	var c_b := Vector3(0.17, -0.13, -h)
+	# передняя и задняя грань
+	st.add_vertex(a_f); st.add_vertex(b_f); st.add_vertex(c_f)
+	st.add_vertex(a_b); st.add_vertex(c_b); st.add_vertex(b_b)
+	# боковые грани (рёбра)
+	for e in [[a_f, b_f, a_b, b_b], [b_f, c_f, b_b, c_b], [c_f, a_f, c_b, a_b]]:
+		st.add_vertex(e[0]); st.add_vertex(e[1]); st.add_vertex(e[3])
+		st.add_vertex(e[0]); st.add_vertex(e[3]); st.add_vertex(e[2])
 	st.generate_normals()
 	return st.commit()
 
@@ -825,14 +856,17 @@ func _make_shard_star(color: Color, emit: Color, emit_energy: float) -> MeshInst
 # ---------- осколки (парящие тетраэдры) ----------
 func _build_shards() -> void:
 	for i in SHARD_COUNT:
-		var x := randf_range(-WORLD + 6, WORLD - 6)
-		var z := randf_range(-WORLD + 6, WORLD - 6)
+		# по кругу (мир круглый) — иначе осколок мог оказаться за краем карты
+		var a := randf() * TAU
+		var r := randf_range(12.0, WORLD - 12.0)
+		var x := cos(a) * r
+		var z := sin(a) * r
 		var base_y := _terrain_h(x, z)
 		var n := Node3D.new()
 		n.position = Vector3(x, base_y + 0.55, z)
 
 		var mi := MeshInstance3D.new()
-		mi.mesh = tetra_mesh
+		mi.mesh = shard_frag_mesh
 		var m := StandardMaterial3D.new()
 		m.albedo_color = Color(1.0, 0.91, 0.63)
 		m.emission_enabled = true
@@ -840,6 +874,7 @@ func _build_shards() -> void:
 		m.emission_energy_multiplier = 2.2
 		m.roughness = 0.3
 		m.metalness = 0.3
+		m.cull_mode = BaseMaterial3D.CULL_DISABLED
 		mi.material_override = m
 		mi.rotation = Vector3(randf() * 3, randf() * 3, randf() * 3)
 		n.add_child(mi)
@@ -1167,7 +1202,7 @@ func _build_hud() -> void:
 	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	hint.add_theme_font_size_override("font_size", 15)
 	hint.add_theme_color_override("font_color", Color(0.7, 0.75, 0.85))
-	hint.text = "WASD — идти  ·  мышь — осмотр  ·  Ctrl — присесть  ·  F — фонарь  ·  Q — ветка  ·  ESC — курсор"
+	hint.text = "WASD — идти  ·  Shift — бежать  ·  Ctrl — присесть  ·  мышь — осмотр  ·  F — фонарь  ·  Q — ветка"
 	layer.add_child(hint)
 
 	# полоска заряда фонаря
@@ -1181,6 +1216,18 @@ func _build_hud() -> void:
 	battery_fill.anchor_left = 1.0; battery_fill.anchor_right = 1.0
 	battery_fill.offset_left = -140.0; battery_fill.offset_top = 20.0; battery_fill.offset_right = -20.0; battery_fill.offset_bottom = 34.0
 	layer.add_child(battery_fill)
+
+	# полоска стамины (под зарядом фонаря)
+	var sbg := ColorRect.new()
+	sbg.color = Color(0, 0, 0, 0.45)
+	sbg.anchor_left = 1.0; sbg.anchor_right = 1.0
+	sbg.offset_left = -140.0; sbg.offset_top = 40.0; sbg.offset_right = -20.0; sbg.offset_bottom = 54.0
+	layer.add_child(sbg)
+	stamina_fill = ColorRect.new()
+	stamina_fill.color = Color(0.45, 0.7, 1.0)
+	stamina_fill.anchor_left = 1.0; stamina_fill.anchor_right = 1.0
+	stamina_fill.offset_left = -140.0; stamina_fill.offset_top = 40.0; stamina_fill.offset_right = -20.0; stamina_fill.offset_bottom = 54.0
+	layer.add_child(stamina_fill)
 
 	light_btn = Button.new()
 	light_btn.text = "Фонарь: вкл"
@@ -1421,7 +1468,22 @@ func _process(delta: float) -> void:
 	var dir := fwd * (-mv.y) + right * mv.x
 	dir.y = 0.0
 	crouching = Input.is_key_pressed(KEY_CTRL) or Input.is_key_pressed(KEY_C)
-	var pspeed := PLAYER_SPEED * (0.45 if crouching else 1.0)
+	var wants_sprint := Input.is_key_pressed(KEY_SHIFT) and not crouching and mv.length() > 0.1
+	if stamina <= 0.0:
+		stamina_exhausted = true
+	elif stamina > 0.3:
+		stamina_exhausted = false
+	sprinting = wants_sprint and not stamina_exhausted
+	if sprinting:
+		stamina = max(0.0, stamina - STAMINA_DRAIN * delta)
+	else:
+		stamina = min(1.0, stamina + STAMINA_REGEN * delta)
+	_update_stamina()
+	var pspeed := PLAYER_SPEED
+	if crouching:
+		pspeed = PLAYER_SPEED * 0.5
+	elif sprinting:
+		pspeed = SPRINT_SPEED
 	player_vel = dir * pspeed
 	var nx := player.position.x + dir.x * pspeed * delta
 	var nz := player.position.z + dir.z * pspeed * delta
@@ -1437,10 +1499,11 @@ func _process(delta: float) -> void:
 	# покачивание головы + крен камеры при ходьбе
 	var move_mag: float = min(1.0, mv.length())
 	if move_mag > 0.1:
-		bob_phase += delta * PLAYER_SPEED * move_mag * 1.4
+		bob_phase += delta * pspeed * move_mag * 1.4
 		if not crouching:
 			step_time += delta
-			if step_time > 0.34:
+			var step_int: float = 0.24 if sprinting else 0.34
+			if step_time > step_int:
 				step_time = 0.0
 				_beep(90.0, 0.09, 0.05, 60.0)
 	var target_eye: float = 0.95 if crouching else EYE
@@ -1670,8 +1733,11 @@ func _update_wolves(delta: float) -> void:
 		else:
 			# зрение (дальше при фонаре, ближе в присяде) + слух (по шагам)
 			var moving := player_vel.length() > 0.5
-			var sight := detect * (0.55 if crouching else 1.0)
-			var hearing := (4.0 if crouching else 10.0) if moving else 2.0
+			# в присяде оборотни почти слепы к тебе (сильно урезаны зрение и слух)
+			var sight := detect * (0.22 if crouching else 1.0)
+			var hearing := 2.0
+			if moving:
+				hearing = 2.5 if crouching else (16.0 if sprinting else 10.0)
 			var sees := dist < sight or dist < hearing
 			if sees:
 				if w["state"] != "chase":
@@ -1796,6 +1862,19 @@ func _alert_pack(pos: Vector3) -> void:
 			w["state"] = "search"
 			w["last_seen"] = Vector3(pos.x, 0, pos.z)
 			w["search"] = SEARCH_TIME
+
+
+func _update_stamina() -> void:
+	if stamina_fill == null:
+		return
+	var p: float = clamp(stamina, 0.0, 1.0)
+	stamina_fill.offset_right = -140.0 + 120.0 * p
+	if stamina_exhausted:
+		stamina_fill.color = Color(1.0, 0.4, 0.3)
+	elif p > 0.3:
+		stamina_fill.color = Color(0.45, 0.7, 1.0)
+	else:
+		stamina_fill.color = Color(1.0, 0.72, 0.3)
 
 
 func _update_battery() -> void:
