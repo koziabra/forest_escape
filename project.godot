@@ -17,6 +17,11 @@ compatibility/default_parent_skeleton_in_mesh_instance_3d=true
 config/name="Forest Escape"
 run/main_scene="res://Main.tscn"
 config/features=PackedStringArray("4.7", "Mobile")
+config/icon="res://icon.png"
+boot_splash/bg_color=Color(0.03, 0.05, 0.11, 1)
+boot_splash/image="res://icon.png"
+boot_splash/fullsize=false
+boot_splash/use_filter=true
 
 [display]
 

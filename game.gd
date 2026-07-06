@@ -109,6 +109,10 @@ var end_msg: Label
 
 
 func _ready() -> void:
+	var _icon := Image.new()
+	if _icon.load("res://icon.png") == OK:
+		DisplayServer.set_icon(_icon)
+	get_window().title = "Forest Escape"
 	glow_tex = _make_glow_tex()
 	grass_img_tex = _grass_img()
 	foliage_img_tex = _foliage_img()
@@ -914,18 +918,19 @@ func _build_shards() -> void:
 		m.albedo_color = Color(1.0, 0.91, 0.63)
 		m.emission_enabled = true
 		m.emission = Color(1.0, 0.82, 0.29)
-		m.emission_energy_multiplier = 4.5
+		m.emission_energy_multiplier = 6.5
 		m.roughness = 0.3
 		m.metalness = 0.3
 		m.cull_mode = BaseMaterial3D.CULL_DISABLED
 		mi.material_override = m
+		mi.scale = Vector3(1.3, 1.3, 1.3)
 		mi.rotation = Vector3(randf() * 3, randf() * 3, randf() * 3)
 		n.add_child(mi)
 
 		var l := OmniLight3D.new()
 		l.light_color = Color(1.0, 0.82, 0.35)
-		l.light_energy = 1.8
-		l.omni_range = 8.0
+		l.light_energy = 3.2
+		l.omni_range = 15.0
 		n.add_child(l)
 
 		add_child(n)
@@ -1597,7 +1602,7 @@ func _animate_shards(delta: float) -> void:
 			continue
 		var n: Node3D = s["node"]
 		s["mesh"].rotation.y += delta * 1.5
-		n.position.y = s["base_y"] + 0.6 + sin(game_time * 3.0 + s["x"]) * 0.08
+		n.position.y = s["base_y"] + 0.9 + sin(game_time * 3.0 + s["x"]) * 0.1
 
 
 func _animate_atmosphere(delta: float) -> void:
