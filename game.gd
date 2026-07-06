@@ -58,6 +58,8 @@ var phase := "collect"           # collect → escape
 var gate: Node3D = null
 var carry_star: Node3D = null
 var exit_pos := Vector3.ZERO
+var inserted := 0
+var gate_arm_mats: Array = []
 
 var glow_tex: GradientTexture2D
 var tetra_mesh: ArrayMesh
@@ -772,24 +774,65 @@ func _make_tetra_mesh(size: float) -> ArrayMesh:
 	return st.commit()
 
 
-# один отломанный луч звезды — треугольный осколок с толщиной
+# луч звезды со случайным отломанным куском середины (каждый осколок уникален)
+func _make_shard_ray() -> ArrayMesh:
+	var hz := randf_range(0.05, 0.08)          # половина толщины
+	var top := randf_range(0.52, 0.72)         # длина луча
+	var w := randf_range(0.1, 0.15)            # полуширина (узкий луч)
+	var s := 1.0 if randf() < 0.5 else -1.0    # сторона скола
+	var bite := randf_range(0.28, 0.48)        # глубина скола
+	var by := randf_range(0.22, 0.42)          # высота скола вдоль луча
+	# профиль остриём вверх, маленький скол на верхней правой грани
+	var pts: Array = [
+		Vector2(0.0, top),
+		Vector2(w, top * randf_range(0.44, 0.52)),
+		Vector2(w * bite, top * (by + 0.06)),                 # скол внутрь
+		Vector2(w * randf_range(0.85, 1.0), top * (by - 0.06)),
+		Vector2(w * randf_range(0.5, 0.7), -0.2),
+		Vector2(-w * randf_range(0.5, 0.7), -0.2),
+		Vector2(-w * randf_range(0.85, 1.0), top * randf_range(0.4, 0.5)),
+	]
+	var poly := PackedVector2Array()
+	for p in pts:
+		poly.append(Vector2(p.x * s, p.y))     # отразить скол на случайную сторону
+	var idx := Geometry2D.triangulate_polygon(poly)
+	var st := SurfaceTool.new()
+	st.begin(Mesh.PRIMITIVE_TRIANGLES)
+	# передняя и задняя грань
+	var tri := idx.size() / 3
+	for t in tri:
+		var a: Vector2 = poly[idx[t * 3]]
+		var b: Vector2 = poly[idx[t * 3 + 1]]
+		var c: Vector2 = poly[idx[t * 3 + 2]]
+		st.add_vertex(Vector3(a.x, a.y, hz)); st.add_vertex(Vector3(b.x, b.y, hz)); st.add_vertex(Vector3(c.x, c.y, hz))
+		st.add_vertex(Vector3(a.x, a.y, -hz)); st.add_vertex(Vector3(c.x, c.y, -hz)); st.add_vertex(Vector3(b.x, b.y, -hz))
+	# боковые грани
+	var n := poly.size()
+	for i in n:
+		var p0: Vector2 = poly[i]
+		var p1: Vector2 = poly[(i + 1) % n]
+		st.add_vertex(Vector3(p0.x, p0.y, hz)); st.add_vertex(Vector3(p1.x, p1.y, hz)); st.add_vertex(Vector3(p1.x, p1.y, -hz))
+		st.add_vertex(Vector3(p0.x, p0.y, hz)); st.add_vertex(Vector3(p1.x, p1.y, -hz)); st.add_vertex(Vector3(p0.x, p0.y, -hz))
+	st.generate_normals()
+	return st.commit()
+
+
+# отломанный луч звезды — вытянутый гранёный кристалл (виден со всех сторон)
 func _make_shard_fragment() -> ArrayMesh:
 	var st := SurfaceTool.new()
 	st.begin(Mesh.PRIMITIVE_TRIANGLES)
-	var h := 0.06
-	var a_f := Vector3(0.0, 0.55, h)
-	var b_f := Vector3(-0.17, -0.13, h)
-	var c_f := Vector3(0.17, -0.13, h)
-	var a_b := Vector3(0.0, 0.55, -h)
-	var b_b := Vector3(-0.17, -0.13, -h)
-	var c_b := Vector3(0.17, -0.13, -h)
-	# передняя и задняя грань
-	st.add_vertex(a_f); st.add_vertex(b_f); st.add_vertex(c_f)
-	st.add_vertex(a_b); st.add_vertex(c_b); st.add_vertex(b_b)
-	# боковые грани (рёбра)
-	for e in [[a_f, b_f, a_b, b_b], [b_f, c_f, b_b, c_b], [c_f, a_f, c_b, a_b]]:
-		st.add_vertex(e[0]); st.add_vertex(e[1]); st.add_vertex(e[3])
-		st.add_vertex(e[0]); st.add_vertex(e[3]); st.add_vertex(e[2])
+	var top := Vector3(0, 0.58, 0)
+	var bot := Vector3(0, -0.2, 0)
+	var n := 4
+	var ring: Array = []
+	for i in n:
+		var a := TAU * float(i) / float(n) + PI / 4.0
+		ring.append(Vector3(cos(a) * 0.17, 0.03, sin(a) * 0.17))
+	for i in n:
+		var p0: Vector3 = ring[i]
+		var p1: Vector3 = ring[(i + 1) % n]
+		st.add_vertex(top); st.add_vertex(p0); st.add_vertex(p1)
+		st.add_vertex(bot); st.add_vertex(p1); st.add_vertex(p0)
 	st.generate_normals()
 	return st.commit()
 
@@ -871,7 +914,7 @@ func _build_shards() -> void:
 		m.albedo_color = Color(1.0, 0.91, 0.63)
 		m.emission_enabled = true
 		m.emission = Color(1.0, 0.82, 0.29)
-		m.emission_energy_multiplier = 2.2
+		m.emission_energy_multiplier = 4.5
 		m.roughness = 0.3
 		m.metalness = 0.3
 		m.cull_mode = BaseMaterial3D.CULL_DISABLED
@@ -879,12 +922,10 @@ func _build_shards() -> void:
 		mi.rotation = Vector3(randf() * 3, randf() * 3, randf() * 3)
 		n.add_child(mi)
 
-		_add_glow(n, 3.0, Color(1.0, 0.94, 0.69))
-
 		var l := OmniLight3D.new()
 		l.light_color = Color(1.0, 0.82, 0.35)
-		l.light_energy = 1.6
-		l.omni_range = 9.0
+		l.light_energy = 1.8
+		l.omni_range = 8.0
 		n.add_child(l)
 
 		add_child(n)
@@ -1434,8 +1475,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if Input.mouse_mode == Input.MOUSE_MODE_CAPTURED else Input.MOUSE_MODE_CAPTURED
 		elif event.keycode == KEY_F:
 			_toggle_light()
-		elif event.keycode == KEY_Q or event.keycode == KEY_E:
+		elif event.keycode == KEY_Q:
 			_throw_branch()
+		elif event.keycode == KEY_E:
+			_try_insert_shard()
 
 
 # ---------- главный цикл ----------
@@ -1528,16 +1571,15 @@ func _process(delta: float) -> void:
 		carry_star.position.y = -0.55 + sin(game_time * 2.0) * 0.04
 	if gate != null:
 		gate.get_node("ring").rotation.z += delta * 1.6
-		gate.get_node("socket").rotation.z += delta * 0.8
 
 	_update_branches(delta)
 
 	if phase == "escape":
 		var d := Vector2(player.position.x - exit_pos.x, player.position.z - exit_pos.z).length()
 		if d < 3.6:
-			_insert_star()
-			return
-		_flash("Неси звезду к воротам! %d м" % int(d), Color(1.0, 0.42, 0.37))
+			_flash("Нажми E — вставь осколок (%d/5)" % inserted, Color(0.6, 0.85, 1.0))
+		else:
+			_flash("Неси осколки к воротам! %d м" % int(d), Color(1.0, 0.42, 0.37))
 
 	_update_wolves(delta)
 
@@ -1596,6 +1638,7 @@ func _check_shards() -> void:
 
 func _open_exit() -> void:
 	phase = "escape"
+	inserted = 0
 	var a := randf() * TAU
 	var gx := cos(a) * (WORLD - 6.0)
 	var gz := sin(a) * (WORLD - 6.0)
@@ -1603,15 +1646,8 @@ func _open_exit() -> void:
 	exit_pos = Vector3(gx - gx / dl * 2.4, 0, gz - gz / dl * 2.4)
 	gate = _build_gate(Vector3(gx, 0, gz))
 	add_child(gate)
-	# собранная звезда — в руках перед игроком
-	carry_star = Node3D.new()
-	var cs := _make_shard_star(Color(1.0, 0.95, 0.69), Color(1.0, 0.89, 0.48), 1.4)
-	cs.scale = Vector3(0.42, 0.42, 0.42)
-	carry_star.add_child(cs)
-	carry_star.position = Vector3(0, -0.55, -1.3)
-	cam.add_child(carry_star)
 	_beep(330.0, 0.6, 0.1, 660.0)
-	_flash("Звезда собрана! Неси её к воротам и вставь в гнездо!", Color(1.0, 0.42, 0.37))
+	_flash("Все осколки собраны! Неси их к воротам и вставь все 5 в гнездо-звезду (E)!", Color(1.0, 0.42, 0.37))
 
 
 func _build_gate(pos: Vector3) -> Node3D:
@@ -1666,12 +1702,24 @@ func _build_gate(pos: Vector3) -> Node3D:
 	ped.position = Vector3(0, 0.55, 2.4)
 	g.add_child(ped)
 
-	var socket := _make_shard_star(Color(0.13, 0.19, 0.28), Color(0.05, 0.09, 0.14), 0.4)
-	socket.name = "socket"
-	socket.scale = Vector3(0.95, 0.95, 0.95)
-	socket.position = Vector3(0, 1.3, 2.4)
-	socket.rotation.x = -PI / 2.0
-	g.add_child(socket)
+	# гнездо-звезда из 5 лучей — заполняется по мере вставки осколков
+	gate_arm_mats = []
+	for i in 5:
+		var arm := MeshInstance3D.new()
+		arm.mesh = shard_frag_mesh
+		var am := StandardMaterial3D.new()
+		am.albedo_color = Color(0.16, 0.18, 0.24)
+		am.emission_enabled = true
+		am.emission = Color(1.0, 0.86, 0.4)
+		am.emission_energy_multiplier = 0.0     # тёмный, пока не вставлен
+		am.cull_mode = BaseMaterial3D.CULL_DISABLED
+		arm.material_override = am
+		var ang := TAU * float(i) / 5.0
+		arm.transform = Transform3D(
+			Basis(Vector3.UP, ang) * Basis(Vector3.RIGHT, PI / 2.0) * Basis().scaled(Vector3(0.95, 0.95, 0.95)),
+			Vector3(0, 1.35, 2.4))
+		g.add_child(arm)
+		gate_arm_mats.append(am)
 	_add_glow(g, 2.6, Color(0.62, 0.82, 1.0)).position = Vector3(0, 1.45, 2.4)
 
 	var light := OmniLight3D.new()
@@ -1715,7 +1763,7 @@ func _update_wolves(delta: float) -> void:
 		var dxp := pp.x - wpos.x
 		var dzp := pp.z - wpos.z
 		var dist := Vector2(dxp, dzp).length()
-		var detect := INF if phase == "escape" else (WOLF_DETECT_LIT if light_on else WOLF_DETECT_DARK)
+		var detect := WOLF_DETECT_LIT if light_on else WOLF_DETECT_DARK
 
 		var speed := WOLF_WANDER_SPEED
 		var dirx := 0.0
@@ -1886,6 +1934,26 @@ func _update_battery() -> void:
 		battery_fill.color = Color(1.0, 0.82, 0.29)
 	else:
 		battery_fill.color = Color(1.0, 0.35, 0.29)
+
+
+func _try_insert_shard() -> void:
+	if phase != "escape" or gate == null or inserted >= 5:
+		return
+	var d := Vector2(player.position.x - exit_pos.x, player.position.z - exit_pos.z).length()
+	if d > 3.6:
+		return
+	# зажечь очередной луч звезды
+	var am: StandardMaterial3D = gate_arm_mats[inserted]
+	am.albedo_color = Color(1.0, 0.9, 0.6)
+	am.emission_energy_multiplier = 4.0
+	inserted += 1
+	_beep(660.0, 0.13, 0.16, 990.0)
+	_burst(Vector3(exit_pos.x, _terrain_h(exit_pos.x, exit_pos.z) + 1.4, exit_pos.z), Color(1.0, 0.9, 0.6), 14)
+	if inserted >= 5:
+		(gate.get_node("glow_light") as OmniLight3D).light_energy = 5.0
+		_win()
+	else:
+		_flash("Осколок вставлен (%d/5)" % inserted, Color(0.6, 0.85, 1.0))
 
 
 func _win() -> void:
